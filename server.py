@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+"""Local control plane for the Newton-on-Brev browser viewer prototype."""
+
+from __future__ import annotations
+
+import json
+import os
+import signal
+import socket
+import subprocess
+import threading
+import time
+from http import HTTPStatus
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse
+
+ROOT = Path(__file__).resolve().parent
+NEWTON_ROOT = Path(os.environ.get("NEWTON_ROOT", ROOT.parent / "newton")).resolve()
+NEWTON_PYTHON = NEWTON_ROOT / ".venv" / "bin" / "python"
+HOST = os.environ.get("NEWTON_LAUNCHER_HOST", "0.0.0.0")
+PORT = int(os.environ.get("NEWTON_LAUNCHER_PORT", "4173"))
+VIEWER_PORT = int(os.environ.get("RERUN_WEB_PORT", "9090"))
+GRPC_PORT = int(os.environ.get("RERUN_GRPC_PORT", "9876"))
+WEB_UPSTREAM = ("127.0.0.1", VIEWER_PORT)
+GRPC_UPSTREAM = ("127.0.0.1", GRPC_PORT)
+VIEWER_ORIGIN = os.environ.get("RERUN_WEB_ORIGIN", "").rstrip("/") or None
+GRPC_ORIGIN = os.environ.get("RERUN_GRPC_ORIGIN", "").rstrip("/") or None
+LOG_PATH = ROOT / ".newton-viewer.log"
+
+ALLOWED_EXAMPLES = {
+    "basic_shapes",
+    "robot_g1",
+    "robot_anymal_c_walk",
+    "cloth_franka",
+    "mpm_twoway_coupling",
+    "ik_franka",
+    "diffsim_drone",
+    "cloth_style3d",
+}
+
+
+def port_is_open(port: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.15):
+            return True
+    except OSError:
+        return False
+
+
+class NewtonRuntime:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._process: subprocess.Popen[bytes] | None = None
+        self._example: str | None = None
+        self._started_at: float | None = None
+        self._log_handle = None
+        self._last_error: str | None = None
+
+    def start(self, example: str) -> dict:
+        if example not in ALLOWED_EXAMPLES:
+            raise ValueError(f"Unsupported example: {example}")
+        if not NEWTON_PYTHON.is_file():
+            raise RuntimeError(f"Newton Python not found: {NEWTON_PYTHON}")
+
+        with self._lock:
+            self._stop_locked()
+            LOG_PATH.write_text("", encoding="utf-8")
+            self._log_handle = LOG_PATH.open("ab", buffering=0)
+            command = [
+                str(NEWTON_PYTHON),
+                str(ROOT / "run_example_realtime.py"),
+                example,
+                "--viewer",
+                "rerun",
+                "--device",
+                "cuda:0",
+            ]
+            self._process = subprocess.Popen(
+                command,
+                cwd=NEWTON_ROOT,
+                stdout=self._log_handle,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            )
+            self._example = example
+            self._started_at = time.time()
+            self._last_error = None
+            return self.status()
+
+    def stop(self) -> None:
+        with self._lock:
+            self._stop_locked()
+
+    def _stop_locked(self) -> None:
+        process = self._process
+        if process is not None and process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=5)
+            except (ProcessLookupError, subprocess.TimeoutExpired):
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=2)
+                except (ProcessLookupError, subprocess.TimeoutExpired):
+                    pass
+        if self._log_handle is not None:
+            self._log_handle.close()
+            self._log_handle = None
+        self._process = None
+        self._started_at = None
+
+    def status(self) -> dict:
+        process = self._process
+        return_code = process.poll() if process is not None else None
+        running = process is not None and return_code is None
+        if process is not None and return_code is not None and self._last_error is None:
+            self._last_error = f"Newton exited with code {return_code}"
+        return {
+            "example": self._example,
+            "running": running,
+            "viewer_ready": running and port_is_open(VIEWER_PORT) and port_is_open(GRPC_PORT),
+            "pid": process.pid if running else None,
+            "started_at": self._started_at,
+            "viewer_port": VIEWER_PORT,
+            "grpc_port": GRPC_PORT,
+            "viewer_origin": VIEWER_ORIGIN,
+            "grpc_origin": GRPC_ORIGIN,
+            "error": self._last_error,
+        }
+
+    def tail_log(self, limit: int = 80) -> list[str]:
+        if not LOG_PATH.exists():
+            return []
+        try:
+            lines = LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
+            return lines[-max(1, min(limit, 200)) :]
+        except OSError:
+            return []
+
+
+runtime = NewtonRuntime()
+
+
+class Handler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=str(ROOT), **kwargs)
+
+    def _relay(self, host: str, port: int, upstream_path: str) -> None:
+        """Reverse-proxy the current request to an upstream HTTP/1.1 service.
+
+        The Rerun web viewer (HTTP/1.1) and its gRPC message proxy (gRPC-Web
+        over HTTP/1.1) are streamed through this launcher so the whole viewer is
+        same-origin and only one port needs to be exposed.
+        """
+        self.close_connection = True
+        try:
+            upstream = socket.create_connection((host, port))
+        except OSError as exc:
+            try:
+                self.send_error(HTTPStatus.BAD_GATEWAY, f"Viewer upstream unavailable: {exc}")
+            except OSError:
+                pass
+            return
+
+        try:
+            header_lines = [f"{self.command} {upstream_path} HTTP/1.1\r\n"]
+            for key, value in self.headers.items():
+                if key.lower() in ("host", "connection", "keep-alive", "proxy-connection"):
+                    continue
+                header_lines.append(f"{key}: {value}\r\n")
+            header_lines.append(f"Host: {host}:{port}\r\n")
+            header_lines.append("Connection: close\r\n\r\n")
+            upstream.sendall("".join(header_lines).encode("latin-1"))
+
+            content_length = self.headers.get("Content-Length")
+            if content_length is not None:
+                remaining = int(content_length)
+                while remaining > 0:
+                    chunk = self.rfile.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    upstream.sendall(chunk)
+                    remaining -= len(chunk)
+
+            while True:
+                data = upstream.recv(65536)
+                if not data:
+                    break
+                self.wfile.write(data)
+                self.wfile.flush()
+        except OSError:
+            pass
+        finally:
+            upstream.close()
+
+    def _send_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        path = urlparse(self.path).path
+        if path == "/viewer" or path.startswith("/viewer/"):
+            self._relay(*WEB_UPSTREAM, self.path[len("/viewer"):] or "/")
+            return
+        if path == "/api/status":
+            self._send_json(runtime.status())
+            return
+        if path == "/api/log":
+            self._send_json({"lines": runtime.tail_log()})
+            return
+        super().do_GET()
+
+    def do_POST(self) -> None:
+        if self.headers.get("Content-Type", "").startswith("application/grpc"):
+            self._relay(*GRPC_UPSTREAM, self.path)
+            return
+        path = urlparse(self.path).path
+        if path == "/api/run":
+            content_length = min(int(self.headers.get("Content-Length", "0")), 4096)
+            try:
+                payload = json.loads(self.rfile.read(content_length) or b"{}")
+                status = runtime.start(str(payload.get("example", "")))
+                self._send_json(status, HTTPStatus.ACCEPTED)
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except Exception as exc:  # noqa: BLE001
+                self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        if path == "/api/stop":
+            runtime.stop()
+            self._send_json(runtime.status())
+            return
+        self._send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
+
+    def log_message(self, format: str, *args) -> None:
+        print(f"[launcher] {self.address_string()} {format % args}", flush=True)
+
+
+def main() -> None:
+    runtime.start("basic_shapes")
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    print(f"Newton launcher: http://{HOST}:{PORT}", flush=True)
+    print(f"Rerun viewer: http://{HOST}:{VIEWER_PORT}", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+        runtime.stop()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Run and visualize real Newton physics examples in an embedded browser viewer on Brev." />
+    <title>Newton Example Studio · Brev</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#rerun-frame">Skip to viewer</a>
+
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="Newton Example Studio home">
+        <span class="brev-wordmark">brev</span>
+        <span class="brand-divider" aria-hidden="true"></span>
+        <span class="newton-brand"><img src="./public/newton-logo.png" alt="" /><span>Newton</span></span>
+        <span class="product-name">Example Studio</span>
+      </a>
+      <div class="topbar-actions">
+        <span class="connection-label" id="global-status"><span class="status-dot"></span> Runtime connecting</span>
+        <span class="live-label">Live runtime</span>
+        <a class="icon-button" href="https://github.com/newton-physics/newton" target="_blank" rel="noreferrer" aria-label="View Newton on GitHub"><i data-lucide="github" aria-hidden="true"></i></a>
+        <button class="avatar" type="button" aria-label="Open account menu">SR</button>
+      </div>
+    </header>
+
+    <main class="studio-shell">
+      <aside class="library-panel" aria-labelledby="library-title">
+        <div class="library-heading">
+          <div><p class="eyebrow">Newton examples</p><h1 id="library-title">Choose a scene</h1></div>
+          <span id="result-count" aria-live="polite"></span>
+        </div>
+
+        <label class="search-control" for="example-search">
+          <i data-lucide="search" aria-hidden="true"></i>
+          <input id="example-search" type="search" placeholder="Search examples" autocomplete="off" />
+          <button id="clear-search" type="button" aria-label="Clear search" hidden><i data-lucide="x" aria-hidden="true"></i></button>
+        </label>
+
+        <div class="filters" id="filters" aria-label="Filter example categories"></div>
+        <div class="example-list" id="example-list"></div>
+        <div class="empty-state" id="empty-state" hidden>
+          <i data-lucide="search-x" aria-hidden="true"></i><strong>No examples found</strong><button id="reset-filters" type="button">Reset filters</button>
+        </div>
+      </aside>
+
+      <section class="viewer-column" aria-label="Live Newton simulation viewer">
+        <div class="viewer-toolbar">
+          <div class="viewer-title">
+            <i data-lucide="box" aria-hidden="true"></i>
+            <div><strong id="viewer-example-title">Basic Shapes</strong><span id="viewer-path">/world/basic_shapes</span></div>
+          </div>
+          <div class="viewer-tools">
+            <span class="stream-status"><span class="status-dot"></span><span id="stream-label">Starting</span></span>
+            <button id="refresh-viewer" class="icon-button" type="button" aria-label="Reconnect viewer" title="Reconnect viewer"><i data-lucide="refresh-cw" aria-hidden="true"></i></button>
+            <button id="fullscreen-view" class="icon-button" type="button" aria-label="Open fullscreen viewer" title="Fullscreen"><i data-lucide="maximize-2" aria-hidden="true"></i></button>
+          </div>
+        </div>
+
+        <div class="viewer-stage" id="viewer-stage">
+          <iframe id="rerun-frame" title="Rerun Web Viewer showing the live Newton simulation" allow="fullscreen; clipboard-read; clipboard-write" referrerpolicy="no-referrer"></iframe>
+          <div class="loading-cover" id="loading-cover">
+            <div class="loading-spinner" aria-hidden="true"></div>
+            <p class="eyebrow">Real Newton runtime</p>
+            <h2 id="loading-title">Starting Basic Shapes</h2>
+            <p id="loading-copy">Launching Newton on CUDA and waiting for the Rerun stream…</p>
+          </div>
+        </div>
+
+        <div class="viewer-footer">
+          <div class="viewer-kind"><span class="rerun-mark" aria-hidden="true"></span><div><strong>Rerun Web Viewer</strong><span>Live simulation data · WebAssembly</span></div></div>
+          <div class="endpoint"><span>STREAM</span><code id="stream-endpoint">rerun+http://&lt;same-origin&gt;/proxy</code></div>
+          <a id="open-viewer" href="#" target="_blank" rel="noreferrer">Open viewer directly <i data-lucide="arrow-up-right" aria-hidden="true"></i></a>
+        </div>
+
+        <div class="runtime-console">
+          <div class="console-heading"><span><i data-lucide="terminal" aria-hidden="true"></i> Runtime log</span><button id="refresh-log" type="button">Refresh</button></div>
+          <pre id="runtime-log">Waiting for Newton runtime output…</pre>
+        </div>
+      </section>
+
+      <aside class="inspector-panel" aria-labelledby="inspector-title">
+        <div class="inspector-heading"><p class="eyebrow">Selected example</p><h2 id="inspector-title">Basic Shapes</h2><p id="selected-id">basic_shapes</p></div>
+        <div class="inspector-preview"><img id="selected-image" src="./public/examples/basic-shapes.jpg" alt="Basic Shapes example preview" /><span id="selected-category">Basics</span></div>
+        <p class="selected-description" id="selected-description"></p>
+        <div class="tag-list" id="selected-tags"></div>
+
+        <div class="runtime-card">
+          <div class="runtime-row"><span>Newton process</span><strong id="process-status"><span class="status-dot"></span> Starting</strong></div>
+          <div class="runtime-row"><span>Viewer</span><strong>Rerun Web 0.35</strong></div>
+          <div class="runtime-row"><span>Compute</span><strong>CUDA · Active</strong></div>
+        </div>
+
+        <div class="command-block">
+          <div class="command-heading"><span><i data-lucide="terminal" aria-hidden="true"></i> Launch command</span><button id="copy-command" type="button"><i data-lucide="copy" aria-hidden="true"></i><span>Copy</span></button></div>
+          <code id="selected-command"></code>
+        </div>
+
+        <button class="run-button" id="run-button" type="button"><i data-lucide="play" aria-hidden="true"></i><span>Run this example</span></button>
+        <a class="source-link" id="source-link" href="#" target="_blank" rel="noreferrer">View source on GitHub <i data-lucide="arrow-up-right" aria-hidden="true"></i></a>
+
+        <div class="architecture-note active">
+          <i data-lucide="radio" aria-hidden="true"></i>
+          <p><strong>Actual viewer integration</strong><span>This panel is the real Rerun Web Viewer connected to the Newton process. Selecting “Run” restarts the allowlisted cloud runtime and reconnects here—no popup required.</span></p>
+        </div>
+      </aside>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>
