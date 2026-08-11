@@ -214,7 +214,11 @@ class NewtonRuntime:
         if not LOG_PATH.exists():
             return []
         try:
-            lines = LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
+            lines = [
+                line
+                for line in LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
+                if not line.startswith(STAGE_MARKER)
+            ]
             return lines[-max(1, min(limit, 200)) :]
         except OSError:
             return []

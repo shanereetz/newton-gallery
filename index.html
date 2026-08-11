@@ -43,6 +43,48 @@
         </div>
       </aside>
 
+      <aside class="inspector-panel" aria-labelledby="inspector-title">
+        <div class="inspector-heading"><p class="eyebrow">Selected example</p><h2 id="inspector-title">Basic Shapes</h2><p id="selected-id">basic_shapes</p></div>
+        <div class="inspector-preview"><img id="selected-image" src="./public/examples/basic-shapes.jpg" alt="Basic Shapes example preview" /><span id="selected-category">Basics</span></div>
+        <p class="selected-description" id="selected-description"></p>
+        <div class="tag-list" id="selected-tags"></div>
+
+        <button class="run-button" id="run-button" type="button"><i data-lucide="play" aria-hidden="true"></i><span>Run this example</span></button>
+
+        <div class="runtime-card">
+          <div class="runtime-row"><span>Newton process</span><strong id="process-status"><span class="status-dot"></span> Starting</strong></div>
+          <div class="runtime-row"><span>Viewer</span><strong>Rerun Web 0.35</strong></div>
+          <div class="runtime-row"><span>Compute</span><strong>CUDA · Active</strong></div>
+        </div>
+
+        <div class="command-block">
+          <div class="command-heading"><span><i data-lucide="terminal" aria-hidden="true"></i> Launch command</span><button id="copy-command" type="button"><i data-lucide="copy" aria-hidden="true"></i><span>Copy</span></button></div>
+          <code id="selected-command"></code>
+        </div>
+
+        <a class="source-link" id="source-link" href="#" target="_blank" rel="noreferrer">View source on GitHub <i data-lucide="arrow-up-right" aria-hidden="true"></i></a>
+
+        <div class="controls-note">
+          <div class="controls-heading"><i data-lucide="orbit" aria-hidden="true"></i> Viewer controls</div>
+          <ul>
+            <li><span>Orbit</span><kbd>Left drag</kbd></li>
+            <li><span>Pan</span><kbd>Right drag</kbd></li>
+            <li><span>Zoom</span><kbd>Scroll</kbd></li>
+            <li><span>Roll</span><kbd>Middle drag</kbd></li>
+            <li><span>Fly</span><kbd>WASD / QE</kbd></li>
+            <li><span>Focus object</span><kbd>Double click</kbd></li>
+            <li><span>Reset view</span><kbd>Double click background</kbd></li>
+            <li><span>Pause playback</span><kbd>Space</kbd></li>
+          </ul>
+          <p>Hover the “?” in a view's top-right corner for its full control list.</p>
+        </div>
+
+        <div class="architecture-note active">
+          <i data-lucide="radio" aria-hidden="true"></i>
+          <p><strong>Actual viewer integration</strong><span>This panel is the real Rerun Web Viewer connected to the Newton process. Selecting “Run” restarts the allowlisted cloud runtime and reconnects here—no popup required.</span></p>
+        </div>
+      </aside>
+
       <section class="viewer-column" aria-label="Live Newton simulation viewer">
         <div class="viewer-toolbar">
           <div class="viewer-title">
@@ -86,47 +128,6 @@
           <pre id="runtime-log">Waiting for Newton runtime output…</pre>
         </div>
       </section>
-
-      <aside class="inspector-panel" aria-labelledby="inspector-title">
-        <div class="inspector-heading"><p class="eyebrow">Selected example</p><h2 id="inspector-title">Basic Shapes</h2><p id="selected-id">basic_shapes</p></div>
-        <div class="inspector-preview"><img id="selected-image" src="./public/examples/basic-shapes.jpg" alt="Basic Shapes example preview" /><span id="selected-category">Basics</span></div>
-        <p class="selected-description" id="selected-description"></p>
-        <div class="tag-list" id="selected-tags"></div>
-
-        <div class="runtime-card">
-          <div class="runtime-row"><span>Newton process</span><strong id="process-status"><span class="status-dot"></span> Starting</strong></div>
-          <div class="runtime-row"><span>Viewer</span><strong>Rerun Web 0.35</strong></div>
-          <div class="runtime-row"><span>Compute</span><strong>CUDA · Active</strong></div>
-        </div>
-
-        <div class="command-block">
-          <div class="command-heading"><span><i data-lucide="terminal" aria-hidden="true"></i> Launch command</span><button id="copy-command" type="button"><i data-lucide="copy" aria-hidden="true"></i><span>Copy</span></button></div>
-          <code id="selected-command"></code>
-        </div>
-
-        <button class="run-button" id="run-button" type="button"><i data-lucide="play" aria-hidden="true"></i><span>Run this example</span></button>
-        <a class="source-link" id="source-link" href="#" target="_blank" rel="noreferrer">View source on GitHub <i data-lucide="arrow-up-right" aria-hidden="true"></i></a>
-
-        <div class="controls-note">
-          <div class="controls-heading"><i data-lucide="orbit" aria-hidden="true"></i> Viewer controls</div>
-          <ul>
-            <li><span>Orbit</span><kbd>Left drag</kbd></li>
-            <li><span>Pan</span><kbd>Right drag</kbd></li>
-            <li><span>Zoom</span><kbd>Scroll</kbd></li>
-            <li><span>Roll</span><kbd>Middle drag</kbd></li>
-            <li><span>Fly</span><kbd>WASD / QE</kbd></li>
-            <li><span>Focus object</span><kbd>Double click</kbd></li>
-            <li><span>Reset view</span><kbd>Double click background</kbd></li>
-            <li><span>Pause playback</span><kbd>Space</kbd></li>
-          </ul>
-          <p>Hover the “?” in a view's top-right corner for its full control list.</p>
-        </div>
-
-        <div class="architecture-note active">
-          <i data-lucide="radio" aria-hidden="true"></i>
-          <p><strong>Actual viewer integration</strong><span>This panel is the real Rerun Web Viewer connected to the Newton process. Selecting “Run” restarts the allowlisted cloud runtime and reconnects here—no popup required.</span></p>
-        </div>
-      </aside>
     </main>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>

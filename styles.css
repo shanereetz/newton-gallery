@@ -41,10 +41,10 @@ svg { width: 1.05em; height: 1.05em; stroke-width: 1.8; }
 .icon-button { display: grid; width: 36px; height: 36px; place-items: center; border: 1px solid var(--line); background: transparent; cursor: pointer; }
 .icon-button:hover { border-color: var(--line-strong); background: var(--surface-2); }
 
-.studio-shell { display: grid; height: calc(100vh - 64px); grid-template-columns: 264px minmax(500px, 1fr) 292px; overflow: hidden; }
+.studio-shell { display: grid; height: calc(100vh - 64px); grid-template-columns: 264px 292px minmax(500px, 1fr); overflow: hidden; }
 .library-panel, .inspector-panel { min-height: 0; overflow-y: auto; background: var(--surface); scrollbar-color: var(--line-strong) transparent; scrollbar-width: thin; }
 .library-panel { border-right: 1px solid var(--line); padding: 22px 16px 26px; }
-.inspector-panel { border-left: 1px solid var(--line); padding: 22px 18px 28px; }
+.inspector-panel { border-right: 1px solid var(--line); padding: 22px 18px 28px; }
 .library-heading { display: flex; align-items: end; justify-content: space-between; gap: 12px; padding: 0 4px; }
 .eyebrow { margin: 0 0 7px; color: var(--accent); font-size: 0.62rem; font-weight: 850; letter-spacing: 0.12em; text-transform: uppercase; }
 .library-heading h1 { margin: 0; font-size: 1.28rem; font-weight: 650; letter-spacing: -0.035em; }
@@ -168,17 +168,17 @@ svg { width: 1.05em; height: 1.05em; stroke-width: 1.8; }
 @media (max-width: 1180px) {
   body { overflow: auto; }
   .studio-shell { height: auto; min-height: calc(100vh - 64px); grid-template-columns: 252px minmax(0, 1fr); overflow: visible; }
-  .library-panel { max-height: calc(100vh - 64px); position: sticky; top: 0; }
-  .viewer-column { min-height: calc(100vh - 64px); grid-template-rows: 58px minmax(520px, 1fr) 62px 128px; }
-  .inspector-panel { grid-column: 1 / -1; display: grid; grid-template-columns: 220px minmax(0, 1fr) minmax(250px, 340px); gap: 24px; border-top: 1px solid var(--line); border-left: 0; padding: 24px; }
+  .library-panel { grid-column: 1; grid-row: 1; max-height: calc(100vh - 64px); position: sticky; top: 0; }
+  .viewer-column { grid-column: 2; grid-row: 1; min-height: calc(100vh - 64px); grid-template-rows: 58px minmax(520px, 1fr) 62px 128px; }
+  .inspector-panel { grid-column: 1 / -1; grid-row: 2; display: grid; grid-template-columns: 220px minmax(0, 1fr) minmax(250px, 340px); gap: 24px; border-top: 1px solid var(--line); border-right: 0; padding: 24px; }
   .inspector-preview { grid-column: 1; grid-row: 1 / span 4; height: 190px; margin: 0; }
   .inspector-heading { grid-column: 2; }
   .selected-description, .tag-list { grid-column: 2; }
   .selected-description { margin-top: 0; }
   .runtime-card, .command-block, .run-button, .source-link, .controls-note, .architecture-note { grid-column: 3; }
-  .runtime-card { grid-row: 1; margin: 0; }
-  .command-block { grid-row: 2; margin: 0; }
-  .run-button { grid-row: 3; margin: 0; }
+  .run-button { grid-row: 1; margin: 0; }
+  .runtime-card { grid-row: 2; margin: 0; }
+  .command-block { grid-row: 3; margin: 0; }
   .source-link { grid-row: 4; margin: 0; }
   .controls-note { grid-row: 5; margin: 0; }
   .architecture-note { grid-row: 6; margin: 0; }
@@ -187,14 +187,16 @@ svg { width: 1.05em; height: 1.05em; stroke-width: 1.8; }
 @media (max-width: 800px) {
   .product-name { display: none; }
   .topbar { height: 60px; padding: 0 16px; }
-  .studio-shell { display: block; min-height: calc(100vh - 60px); }
+  /* Stacked layout keeps the viewer above the inspector even though the
+     inspector precedes it in the markup for the side-by-side layout. */
+  .studio-shell { display: flex; flex-direction: column; min-height: calc(100vh - 60px); }
   .library-panel { position: static; max-height: none; border-right: 0; border-bottom: 1px solid var(--line); padding: 22px 16px; }
   .example-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .viewer-column { min-height: 760px; grid-template-rows: 58px 520px 62px 120px; }
+  .viewer-column { order: 1; min-height: 760px; grid-template-rows: 58px 520px 62px 120px; }
   .viewer-footer { gap: 12px; }
   .endpoint { display: none; }
   .viewer-footer > a { margin-left: auto; }
-  .inspector-panel { display: block; border-top: 1px solid var(--line); padding: 24px 18px 34px; }
+  .inspector-panel { order: 2; display: block; border-top: 1px solid var(--line); border-right: 0; padding: 24px 18px 34px; }
   .inspector-preview { height: 210px; margin-top: 18px; }
   .selected-description, .tag-list, .runtime-card, .command-block, .run-button, .source-link, .controls-note, .architecture-note { margin-top: 16px; }
 }
