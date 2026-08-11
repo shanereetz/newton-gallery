@@ -11,6 +11,21 @@ Use VM Mode, attach this repository as the source, and use this as the setup com
 bash scripts/setup_brev.sh
 ```
 
+The setup script:
+
+- builds the `newton-gallery` Docker image (pinned Newton revision, Warp, MuJoCo,
+  PyTorch CUDA, Rerun SDK, and the four example asset packs);
+- starts the stack with `docker compose up -d`;
+- installs and enables a systemd unit (`newton-gallery.service`) so
+  `docker compose up -d` runs again after every reboot;
+- waits for the launcher health endpoint before returning.
+
+Containers also use `restart: unless-stopped`, so if only the Docker daemon
+restarts they come back without waiting for systemd.
+
+Requirements on the instance: Docker Engine, Compose plugin, and NVIDIA
+Container Toolkit (`gpus: all`). Drivers stay on the host.
+
 Add this optional Text Launch Parameter:
 
 | Setting | Value |
@@ -20,9 +35,9 @@ Add this optional Text Launch Parameter:
 | Default | Leave empty |
 | Description | Full or abbreviated Newton Git commit to check out |
 
-When omitted, the setup script uses the validated commit built into the
-launcher. Brev passes a supplied value to the setup script as an environment
-variable.
+When omitted, the image build uses the validated commit baked into the
+Dockerfile / compose defaults. Brev passes a supplied value through as a
+build arg.
 
 Expose this single port in the Launchable:
 
@@ -32,24 +47,10 @@ Expose this single port in the Launchable:
 
 The launcher reverse-proxies the Rerun Web Viewer (`/viewer`) and its gRPC
 recording stream through port `4173`, so the viewer is served same-origin and no
-other ports need to be exposed. Rerun still listens locally on `9090`/`9876`.
+other ports need to be exposed. Rerun still listens inside the container on
+`9090`/`9876`.
 
 Open port `4173` when setup completes.
-
-The single setup script:
-
-- installs `uv` if needed;
-- clones a pinned Newton revision beside this repository;
-- runs Newton's nominal `uv sync --extra examples --extra torch-cu12` to build
-  its environment from the maintained lockfile (Warp, MuJoCo-Warp, PyTorch, and
-  the viewer stack), substituting a stable MuJoCo release for the expired
-  nightly the lockfile pins, and adds `rerun-sdk` for the web viewer;
-- reverse-proxies the Rerun Web Viewer and gRPC stream through the launcher port;
-- prefetches the four externally downloaded example asset packs;
-- starts the launcher on `0.0.0.0:4173`;
-- waits for the launcher health endpoint before returning.
-
-It does not install drivers or configure the GPU.
 
 ## Public Rerun URLs
 
@@ -74,23 +75,36 @@ Rerun's `rerun+` transport prefix.
 | Variable | Default |
 | --- | --- |
 | `NEWTON_COMMIT` | Validated pinned commit |
-| `NEWTON_ROOT` | Sibling `../newton` directory |
-| `PYTHON_BIN` | `python3` |
 | `NEWTON_LAUNCHER_PORT` | `4173` |
-| `RERUN_WEB_PORT` | `9090` |
-| `RERUN_GRPC_PORT` | `9876` |
-| `PREFETCH_NEWTON_ASSETS` | `1` |
+| `PREFETCH_NEWTON_ASSETS` | `1` (image build) |
+| `RERUN_WEB_ORIGIN` | empty (same-origin proxy) |
+| `RERUN_GRPC_ORIGIN` | empty (same-origin proxy) |
 
-Set `PREFETCH_NEWTON_ASSETS=0` to defer asset downloads until examples launch.
+Set `PREFETCH_NEWTON_ASSETS=0` to skip asset downloads during the image build
+(examples then fetch packs on first run into the `newton-cache` volume).
 
-## Local restart
+## Local Docker
 
-After dependencies have been installed once:
+```bash
+docker compose up -d --build
+```
+
+Then open [http://127.0.0.1:4173](http://127.0.0.1:4173).
+
+Useful commands:
+
+```bash
+docker compose logs -f
+docker compose restart
+sudo systemctl status newton-gallery.service   # after setup_brev.sh
+```
+
+## Local restart (no Docker)
+
+After dependencies have been installed once on the host:
 
 ```bash
 NEWTON_ROOT=../newton python3 server.py
 ```
 
 Then open [http://127.0.0.1:4173](http://127.0.0.1:4173).
-# newton-gallery
-# newton-gallery

@@ -1,0 +1,38 @@
+services:
+  newton-gallery:
+    build:
+      context: .
+      args:
+        NEWTON_COMMIT: ${NEWTON_COMMIT:-045db424a2638eb8e3abd42795584e4eaf96dcfc}
+        PREFETCH_NEWTON_ASSETS: ${PREFETCH_NEWTON_ASSETS:-1}
+    image: newton-gallery:local
+    container_name: newton-gallery
+    restart: unless-stopped
+    ports:
+      - "${NEWTON_LAUNCHER_PORT:-4173}:4173"
+    environment:
+      NEWTON_ROOT: /opt/newton
+      NEWTON_CACHE_PATH: /var/cache/newton
+      NEWTON_LAUNCHER_HOST: 0.0.0.0
+      NEWTON_LAUNCHER_PORT: "4173"
+      RERUN_WEB_PORT: "9090"
+      RERUN_GRPC_PORT: "9876"
+      RERUN_WEB_ORIGIN: ${RERUN_WEB_ORIGIN:-}
+      RERUN_GRPC_ORIGIN: ${RERUN_GRPC_ORIGIN:-}
+      PREFETCH_NEWTON_ASSETS: ${PREFETCH_NEWTON_ASSETS:-0}
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,graphics
+    volumes:
+      - newton-cache:/var/cache/newton
+      - warp-cache:/root/.cache/warp
+    gpus: all
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4173/api/status"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+volumes:
+  newton-cache:
+  warp-cache:

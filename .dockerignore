@@ -1,0 +1,12 @@
+.git
+.gitignore
+.newton-viewer.log
+.launcher.log
+.launcher.pid
+*.pyc
+__pycache__/
+.venv/
+agent-tools/
+*.md
+!README.md
+.env
