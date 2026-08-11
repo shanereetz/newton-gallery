@@ -28,6 +28,24 @@ VIEWER_ORIGIN = os.environ.get("RERUN_WEB_ORIGIN", "").rstrip("/") or None
 GRPC_ORIGIN = os.environ.get("RERUN_GRPC_ORIGIN", "").rstrip("/") or None
 LOG_PATH = ROOT / ".newton-viewer.log"
 
+STAGE_MARKER = "NEWTON_LAUNCHER_STAGE:"
+
+# Floor and ceiling percentages per phase. Newton reports no load percentage,
+# so the bar is driven by observed milestones: the floor is what has provably
+# happened, and the frontend only creeps toward the ceiling of the current
+# phase so the bar keeps moving without claiming unearned progress.
+PHASE_BOUNDS = {
+    "starting": (3, 10),
+    "importing": (10, 22),
+    "assets": (22, 45),
+    "building": (30, 60),
+    "connecting": (62, 78),
+    "warming": (80, 92),
+    "streaming": (94, 99),
+    "offline": (0, 0),
+    "failed": (0, 0),
+}
+
 ALLOWED_EXAMPLES = {
     "basic_shapes",
     "robot_g1",
@@ -111,16 +129,78 @@ class NewtonRuntime:
         self._process = None
         self._started_at = None
 
+    def progress(self, running: bool, viewer_ready: bool) -> dict:
+        elapsed = time.time() - self._started_at if self._started_at else 0.0
+        if not running:
+            phase = "failed" if self._last_error else "offline"
+            floor, ceiling = PHASE_BOUNDS[phase]
+            return {
+                "phase": phase,
+                "percent": floor,
+                "ceiling": ceiling,
+                "detail": self._last_error or "Newton is not running.",
+                "elapsed": elapsed,
+                "has_markers": False,
+            }
+
+        log_text = ""
+        try:
+            log_text = LOG_PATH.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+
+        stages = {
+            line[len(STAGE_MARKER) :].strip() for line in log_text.splitlines() if line.startswith(STAGE_MARKER)
+        }
+        module_loads = log_text.count(" load on device ")
+        compiled = module_loads - log_text.count("(cached)")
+        downloading = log_text.rfind("Cloning ") > log_text.rfind("Successfully downloaded")
+
+        if "streaming" in stages:
+            phase, detail = "streaming", "Streaming live frames to the viewer."
+        elif "scene" in stages:
+            if viewer_ready:
+                phase, detail = "warming", "Scene built. Waiting for the first simulated frame."
+            else:
+                phase, detail = "connecting", "Scene built. Opening the Rerun recording stream."
+        elif downloading:
+            phase, detail = "assets", "Downloading example assets from the Newton asset repository."
+        elif module_loads:
+            phase = "building"
+            detail = f"Building the scene · {module_loads} Warp modules loaded"
+            if compiled > 0:
+                detail += f" · {compiled} compiled from source"
+        elif "Warp" in log_text and "initialized" in log_text:
+            phase, detail = "importing", "Warp initialized. Importing the example and preparing the model."
+        else:
+            phase, detail = "starting", "Starting the Newton process on CUDA."
+
+        floor, ceiling = PHASE_BOUNDS[phase]
+        if phase == "building":
+            # Each loaded Warp module is real progress, but the total is unknown,
+            # so the floor approaches the phase ceiling without reaching it.
+            floor = min(ceiling - 4, floor + module_loads // 3)
+        return {
+            "phase": phase,
+            "percent": floor,
+            "ceiling": ceiling,
+            "detail": detail,
+            "elapsed": elapsed,
+            "has_markers": bool(stages),
+        }
+
     def status(self) -> dict:
         process = self._process
         return_code = process.poll() if process is not None else None
         running = process is not None and return_code is None
         if process is not None and return_code is not None and self._last_error is None:
             self._last_error = f"Newton exited with code {return_code}"
+        viewer_ready = running and port_is_open(VIEWER_PORT) and port_is_open(GRPC_PORT)
         return {
             "example": self._example,
             "running": running,
-            "viewer_ready": running and port_is_open(VIEWER_PORT) and port_is_open(GRPC_PORT),
+            "viewer_ready": viewer_ready,
+            "progress": self.progress(running, viewer_ready),
             "pid": process.pid if running else None,
             "started_at": self._started_at,
             "viewer_port": VIEWER_PORT,
@@ -215,7 +295,23 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/log":
             self._send_json({"lines": runtime.tail_log()})
             return
+        # A cached index.html paired with a freshly edited app.js breaks the
+        # frontend, so the launcher's own files are always served uncached.
+        self._no_store = True
         super().do_GET()
+
+    def end_headers(self) -> None:
+        if getattr(self, "_no_store", False):
+            self._no_store = False
+            self.send_header("Cache-Control", "no-store, must-revalidate")
+        super().end_headers()
+
+    def send_head(self):
+        # SimpleHTTPRequestHandler answers 304 from If-Modified-Since before any
+        # cache directive is consulted, so a browser holding a stale copy would
+        # keep it. Ignoring the validator makes every reply a full response.
+        del self.headers["If-Modified-Since"]
+        return super().send_head()
 
     def do_POST(self) -> None:
         if self.headers.get("Content-Type", "").startswith("application/grpc"):

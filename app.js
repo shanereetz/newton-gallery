@@ -19,7 +19,20 @@ const state = {
   statusTimer: null,
   logTimer: null,
   launching: false,
+  frameLoaded: false,
+  finishing: false,
+  serviceLost: false,
+  coverShownAt: 0,
+  progressTimer: null,
+  progress: { displayed: 0, floor: 0, ceiling: 10, phase: "starting", detail: "", elapsed: 0, hasMarkers: false },
 };
+
+// The embedded viewer connects as soon as Rerun's ports are open, which happens
+// long before a heavy example (ANYmal C Walk, the cloth scenes) has finished
+// downloading assets and compiling kernels. The cover stays up until the Newton
+// process reports its first rendered frame so an empty viewer never shows.
+const STREAM_SETTLE_MS = 600;
+const MARKERLESS_FALLBACK_MS = 20000;
 
 const el = {};
 let toastTimer;
@@ -110,11 +123,80 @@ function updateRunButton() {
 function showLoading(title, copy) {
   el.loadingTitle.textContent = title;
   el.loadingCopy.textContent = copy;
-  el.loadingCover.hidden = false;
+  el.loadingProgress.classList.remove("failed");
+  if (el.loadingCover.hidden) {
+    el.loadingCover.hidden = false;
+    state.progress.displayed = 0;
+  }
+  state.coverShownAt = Date.now();
+  startProgressTicker();
 }
 
 function hideLoading() {
+  state.progress.displayed = 100;
+  renderProgress();
+  window.clearInterval(state.progressTimer);
+  state.progressTimer = null;
   el.loadingCover.hidden = true;
+}
+
+function startProgressTicker() {
+  if (state.progressTimer) return;
+  let ticks = 0;
+  state.progressTimer = window.setInterval(() => {
+    const { ceiling, displayed } = state.progress;
+    // No component of the stack reports a completion ratio, so within a phase
+    // the bar eases toward that phase's ceiling and never past it.
+    if (displayed < ceiling) state.progress.displayed = displayed + (ceiling - displayed) * 0.04;
+    state.progress.elapsed += 0.14;
+    renderProgress();
+    if (++ticks % 4 === 0) fetchStatus().catch(() => {});
+  }, 140);
+}
+
+function renderProgress() {
+  const value = Math.max(0, Math.min(100, Math.round(state.progress.displayed)));
+  el.progressFill.style.width = `${value}%`;
+  el.progressTrack.setAttribute("aria-valuenow", String(value));
+  el.progressPercent.textContent = `${value}%`;
+  el.progressPhase.textContent = state.progress.detail;
+  el.progressElapsed.textContent = `${Math.round(state.progress.elapsed)}s`;
+}
+
+function applyProgress(runtime) {
+  const incoming = runtime.progress;
+  if (!incoming) return;
+  if (state.serviceLost && runtime.running) {
+    state.serviceLost = false;
+    const example = examples.find((item) => item.id === runtime.example);
+    el.loadingTitle.textContent = `Starting ${example?.name || runtime.example}`;
+    el.loadingCopy.textContent = "Reconnected to the launcher. Attaching the embedded Rerun viewer…";
+  }
+  const failed = incoming.phase === "failed" || incoming.phase === "offline";
+  state.progress.floor = incoming.percent;
+  state.progress.ceiling = failed ? state.progress.displayed : incoming.ceiling;
+  state.progress.phase = incoming.phase;
+  state.progress.detail = incoming.detail;
+  state.progress.elapsed = incoming.elapsed;
+  state.progress.hasMarkers = incoming.has_markers;
+  // Progress is monotonic per launch: a phase floor can only pull the bar up.
+  if (incoming.percent > state.progress.displayed) state.progress.displayed = incoming.percent;
+  el.loadingProgress.classList.toggle("failed", failed);
+  renderProgress();
+  maybeFinishLoading(runtime);
+}
+
+function maybeFinishLoading(runtime) {
+  if (el.loadingCover.hidden || state.finishing || !state.frameLoaded || !runtime.viewer_ready) return;
+  const streaming = runtime.progress?.phase === "streaming";
+  const markerless =
+    !runtime.progress?.has_markers && Date.now() - state.coverShownAt > MARKERLESS_FALLBACK_MS;
+  if (!streaming && !markerless) return;
+  state.finishing = true;
+  window.setTimeout(() => {
+    state.finishing = false;
+    hideLoading();
+  }, STREAM_SETTLE_MS);
 }
 
 function connectViewer(force = false) {
@@ -126,21 +208,20 @@ function connectViewer(force = false) {
 
   state.viewerUrl = url;
   state.connectedExample = state.runtime.example;
+  state.frameLoaded = false;
   el.rerunFrame.src = "about:blank";
   window.setTimeout(() => {
     el.rerunFrame.src = url;
-    window.setTimeout(hideLoading, 1300);
   }, 120);
 }
 
 function updateRuntimeUi(runtime) {
   state.runtime = runtime;
   const active = examples.find((example) => example.id === runtime.example);
-  const dotClass = runtime.running ? "status-dot" : "status-dot offline";
 
   if (runtime.viewer_ready) {
-    el.globalStatus.innerHTML = `<span class="status-dot"></span> ${active?.name || runtime.example} streaming`;
-    el.streamLabel.textContent = "Live";
+    const streaming = runtime.progress?.phase === "streaming";
+    el.streamLabel.textContent = streaming ? "Live" : "Loading";
     el.processStatus.innerHTML = `<span class="status-dot"></span> Running · PID ${runtime.pid}`;
     if (active) {
       el.viewerTitle.textContent = active.name;
@@ -148,14 +229,13 @@ function updateRuntimeUi(runtime) {
     }
     connectViewer();
   } else if (runtime.running) {
-    el.globalStatus.innerHTML = `<span class="status-dot"></span> Newton starting`;
     el.streamLabel.textContent = "Connecting";
     el.processStatus.innerHTML = `<span class="status-dot"></span> Starting · PID ${runtime.pid}`;
   } else {
-    el.globalStatus.innerHTML = `<span class="${dotClass}"></span> Runtime offline`;
     el.streamLabel.textContent = "Offline";
     el.processStatus.innerHTML = `<span class="status-dot offline"></span> Offline`;
   }
+  applyProgress(runtime);
   updateRunButton();
 }
 
@@ -181,6 +261,9 @@ async function waitForViewer(exampleId, timeoutMs = 90000) {
 async function runSelectedExample() {
   const example = selectedExample();
   state.launching = true;
+  state.frameLoaded = false;
+  state.progress.displayed = 0;
+  state.progress.elapsed = 0;
   updateRunButton();
   showLoading(`Starting ${example.name}`, `Stopping the current scene, launching ${example.id} on CUDA, and attaching the embedded Rerun viewer…`);
   el.streamLabel.textContent = "Starting";
@@ -283,7 +366,9 @@ function bindEvents() {
     }
   });
   el.rerunFrame.addEventListener("load", () => {
-    if (el.rerunFrame.src !== "about:blank" && state.runtime?.viewer_ready) window.setTimeout(hideLoading, 900);
+    if (el.rerunFrame.src === "about:blank") return;
+    state.frameLoaded = true;
+    if (state.runtime) maybeFinishLoading(state.runtime);
   });
 }
 
@@ -291,11 +376,12 @@ function cacheElements() {
   Object.assign(el, {
     filters: document.querySelector("#filters"), exampleList: document.querySelector("#example-list"), resultCount: document.querySelector("#result-count"),
     search: document.querySelector("#example-search"), clearSearch: document.querySelector("#clear-search"), emptyState: document.querySelector("#empty-state"), resetFilters: document.querySelector("#reset-filters"),
-    viewerTitle: document.querySelector("#viewer-example-title"), viewerPath: document.querySelector("#viewer-path"), streamLabel: document.querySelector("#stream-label"), globalStatus: document.querySelector("#global-status"),
+    viewerTitle: document.querySelector("#viewer-example-title"), viewerPath: document.querySelector("#viewer-path"), streamLabel: document.querySelector("#stream-label"),
     inspectorTitle: document.querySelector("#inspector-title"), selectedId: document.querySelector("#selected-id"), selectedImage: document.querySelector("#selected-image"), selectedCategory: document.querySelector("#selected-category"), selectedDescription: document.querySelector("#selected-description"), selectedTags: document.querySelector("#selected-tags"),
     selectedCommand: document.querySelector("#selected-command"), copyCommand: document.querySelector("#copy-command"), sourceLink: document.querySelector("#source-link"), processStatus: document.querySelector("#process-status"), runButton: document.querySelector("#run-button"),
     rerunFrame: document.querySelector("#rerun-frame"), viewerStage: document.querySelector("#viewer-stage"), refreshViewer: document.querySelector("#refresh-viewer"), fullscreen: document.querySelector("#fullscreen-view"), openViewer: document.querySelector("#open-viewer"), endpoint: document.querySelector("#stream-endpoint"),
     loadingCover: document.querySelector("#loading-cover"), loadingTitle: document.querySelector("#loading-title"), loadingCopy: document.querySelector("#loading-copy"), runtimeLog: document.querySelector("#runtime-log"), refreshLog: document.querySelector("#refresh-log"), toast: document.querySelector("#toast"),
+    loadingProgress: document.querySelector("#loading-progress"), progressTrack: document.querySelector("#progress-track"), progressFill: document.querySelector("#progress-fill"), progressPercent: document.querySelector("#progress-percent"), progressPhase: document.querySelector("#progress-phase"), progressElapsed: document.querySelector("#progress-elapsed"),
   });
 }
 
@@ -306,6 +392,8 @@ async function init() {
   updateSelectedContent();
   bindEvents();
   refreshIcons();
+  state.coverShownAt = Date.now();
+  startProgressTicker();
   try {
     const runtime = await fetchStatus();
     if (runtime.example && examples.some((example) => example.id === runtime.example)) {
@@ -317,11 +405,15 @@ async function init() {
     connectViewer(true);
     await refreshLog();
   } catch (error) {
+    state.serviceLost = true;
     showLoading("Runtime service unavailable", error instanceof Error ? error.message : String(error));
-    el.globalStatus.innerHTML = `<span class="status-dot offline"></span> Runtime unavailable`;
+    el.streamLabel.textContent = "Offline";
+  } finally {
+    // Polling must survive a failed first load: the launcher is often still
+    // starting when the page opens, and these timers are what recover from it.
+    state.statusTimer = window.setInterval(() => fetchStatus().catch(() => {}), 1500);
+    state.logTimer = window.setInterval(refreshLog, 4000);
   }
-  state.statusTimer = window.setInterval(() => fetchStatus().catch(() => {}), 1500);
-  state.logTimer = window.setInterval(refreshLog, 4000);
 }
 
 document.addEventListener("DOMContentLoaded", init);

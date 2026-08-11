@@ -15,16 +15,11 @@
 
     <header class="topbar">
       <a class="brand" href="#" aria-label="Newton Example Studio home">
-        <span class="brev-wordmark">brev</span>
-        <span class="brand-divider" aria-hidden="true"></span>
         <span class="newton-brand"><img src="./public/newton-logo.png" alt="" /><span>Newton</span></span>
         <span class="product-name">Example Studio</span>
       </a>
       <div class="topbar-actions">
-        <span class="connection-label" id="global-status"><span class="status-dot"></span> Runtime connecting</span>
-        <span class="live-label">Live runtime</span>
         <a class="icon-button" href="https://github.com/newton-physics/newton" target="_blank" rel="noreferrer" aria-label="View Newton on GitHub"><i data-lucide="github" aria-hidden="true"></i></a>
-        <button class="avatar" type="button" aria-label="Open account menu">SR</button>
       </div>
     </header>
 
@@ -68,6 +63,15 @@
             <p class="eyebrow">Real Newton runtime</p>
             <h2 id="loading-title">Starting Basic Shapes</h2>
             <p id="loading-copy">Launching Newton on CUDA and waiting for the Rerun stream…</p>
+            <div class="loading-progress" id="loading-progress">
+              <div class="progress-track" id="progress-track" role="progressbar" aria-labelledby="loading-title" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div class="progress-fill" id="progress-fill"></div>
+              </div>
+              <div class="progress-meta">
+                <span id="progress-phase">Starting the Newton process on CUDA.</span>
+                <span id="progress-readout"><strong id="progress-percent">0%</strong><span id="progress-elapsed">0s</span></span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -102,6 +106,21 @@
 
         <button class="run-button" id="run-button" type="button"><i data-lucide="play" aria-hidden="true"></i><span>Run this example</span></button>
         <a class="source-link" id="source-link" href="#" target="_blank" rel="noreferrer">View source on GitHub <i data-lucide="arrow-up-right" aria-hidden="true"></i></a>
+
+        <div class="controls-note">
+          <div class="controls-heading"><i data-lucide="orbit" aria-hidden="true"></i> Viewer controls</div>
+          <ul>
+            <li><span>Orbit</span><kbd>Left drag</kbd></li>
+            <li><span>Pan</span><kbd>Right drag</kbd></li>
+            <li><span>Zoom</span><kbd>Scroll</kbd></li>
+            <li><span>Roll</span><kbd>Middle drag</kbd></li>
+            <li><span>Fly</span><kbd>WASD / QE</kbd></li>
+            <li><span>Focus object</span><kbd>Double click</kbd></li>
+            <li><span>Reset view</span><kbd>Double click background</kbd></li>
+            <li><span>Pause playback</span><kbd>Space</kbd></li>
+          </ul>
+          <p>Hover the “?” in a view's top-right corner for its full control list.</p>
+        </div>
 
         <div class="architecture-note active">
           <i data-lucide="radio" aria-hidden="true"></i>
