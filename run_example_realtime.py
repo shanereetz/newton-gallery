@@ -63,10 +63,10 @@ def limit_stream_buffer() -> None:
 
     Rerun's gRPC server buffers log data so late-connecting viewers receive
     history, defaulting to 1 GiB. A browser that connects minutes into a run
-    must work through that backlog before it reaches live frames, and the
-    viewer's reported latency is roughly the buffer depth expressed in seconds.
-    Geometry is logged as static data, which is never dropped, so a small
-    buffer still yields a complete scene.
+    must work through that backlog before it reaches live frames, which shows up
+    as tens of seconds of reported latency, and the buffer is also what makes
+    memory climb for the whole run. Only static data survives the limit, which
+    is why `pin_geometry` has to run alongside this.
     """
     limit = os.environ.get("RERUN_SERVER_MEMORY_LIMIT", "4MiB")
     serve_grpc = rr.serve_grpc
@@ -78,14 +78,32 @@ def limit_stream_buffer() -> None:
     rr.serve_grpc = serve_grpc_bounded
 
 
-def drop_stale_frames() -> None:
-    """Log body poses as temporal rather than static data.
+def pin_geometry() -> None:
+    """Log meshes as static so a bounded buffer cannot evict the scene.
 
-    Newton defaults to static poses to bound the browser's memory. Static data
-    is exempt from the gRPC server's buffer limit, so every pose ever logged is
-    replayed to a connecting viewer, which then grinds through minutes of
-    history before it reaches the live frame. Temporal poses fall under the
-    buffer limit and are dropped once stale, so a viewer joins near-live.
+    Newton logs a mesh non-static the first time it sees its name, so with a
+    small replay buffer the geometry is dropped within a minute and any browser
+    that connects later renders an empty viewport. Static entries are exempt
+    from the buffer limit, and each log of a given mesh overwrites the previous
+    one, so pinning geometry costs a fixed amount of memory per mesh.
+    """
+    log = rr.log
+
+    def log_static_geometry(entity_path, *payload, static=False, **kwargs):
+        if any(isinstance(item, rr.Mesh3D) for item in payload):
+            static = True
+        return log(entity_path, *payload, static=static, **kwargs)
+
+    rr.log = log_static_geometry
+
+
+def stream_recent_poses() -> None:
+    """Log body poses as temporal data so stale frames can be dropped.
+
+    Newton defaults to static poses to bound the browser's memory, but static
+    data is exempt from the server's buffer limit, so every pose ever logged is
+    replayed to a connecting viewer and memory grows for the length of the run.
+    Temporal poses fall under the limit; geometry stays put via `pin_geometry`.
     """
     from newton.viewer import ViewerRerun
 
@@ -104,7 +122,8 @@ def main() -> None:
     emit_stage("boot")
     disable_viewer_popups()
     limit_stream_buffer()
-    drop_stale_frames()
+    pin_geometry()
+    stream_recent_poses()
     newton.examples.run = paced_run
     newton.examples.main()
 
