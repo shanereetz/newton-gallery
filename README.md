@@ -1,4 +1,4 @@
-# Newton Example Studio on Brev
+# Newton Gallery
 
 A browser launcher for running selected [Newton](https://github.com/newton-physics/newton)
 examples on a GPU instance and viewing their live output in an embedded Rerun Web Viewer.
