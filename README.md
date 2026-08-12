@@ -77,12 +77,20 @@ Rerun's `rerun+` transport prefix.
 | `NEWTON_COMMIT` | Validated pinned commit |
 | `NEWTON_LAUNCHER_PORT` | `4173` |
 | `PREFETCH_NEWTON_ASSETS` | `1` (container start) |
-| `RERUN_SERVER_MEMORY_LIMIT` | `16MiB` |
+| `WARM_KERNEL_CACHE` | `1` (first container start) |
+| `RERUN_SERVER_MEMORY_LIMIT` | `4MiB` |
 | `RERUN_WEB_ORIGIN` | empty (same-origin proxy) |
 | `RERUN_GRPC_ORIGIN` | empty (same-origin proxy) |
 
 Set `PREFETCH_NEWTON_ASSETS=0` to skip asset downloads on first container start
 (examples then fetch packs on first run into the `newton-cache` volume).
+
+`WARM_KERNEL_CACHE` compiles every allowlisted example once in the background on
+first container start. Warp caches an example's kernels under `~/.cache/warp` (a
+named volume), and the difference is large: uncached, the MuJoCo and cloth scenes
+need two to four minutes to reach a first frame, while cached every example
+starts in under ten seconds. The launcher serves traffic during the warm-up, so
+only launches inside that first window are slow. Set it to `0` to skip.
 
 `RERUN_SERVER_MEMORY_LIMIT` caps the backlog Rerun's gRPC server replays to a
 connecting browser. Rerun defaults to 1 GiB, which a viewer opened minutes into a
