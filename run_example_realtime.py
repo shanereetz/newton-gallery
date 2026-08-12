@@ -17,6 +17,11 @@ import newton.examples
 # transitions are the only truthful progress signal available.
 STAGE_MARKER = "NEWTON_LAUNCHER_STAGE:"
 
+# Frames logged to the viewer per second, and the ceiling on simulation steps per
+# logged frame so a scene that cannot hold real time degrades instead of stalling.
+RENDER_FPS = 30.0
+MAX_STEPS_PER_FRAME = 16
+
 
 def emit_stage(stage: str) -> None:
     print(f"{STAGE_MARKER}{stage}", flush=True)
@@ -27,21 +32,41 @@ def paced_run(example, args) -> None:
     if hasattr(example, "gui") and hasattr(example.viewer, "register_ui_callback"):
         example.viewer.register_ui_callback(lambda ui: example.gui(ui), position="side")
 
+    # Examples advance as little as 1/100 s per step, so stepping once per logged
+    # frame plays the scene in slow motion (0.3x for a 100 Hz example). Step as
+    # many times as the wall clock calls for, and log at most RENDER_FPS frames a
+    # second so the browser stream stays bounded.
+    frame_dt = float(getattr(example, "frame_dt", 1.0 / 60.0))
+    render_period = max(frame_dt, 1.0 / RENDER_FPS)
+
     frames = 0
+    sim_time = 0.0
+    started = time.perf_counter()
+
     while example.viewer.is_running():
         frame_started = time.perf_counter()
-        if not example.viewer.is_paused():
+        if example.viewer.is_paused():
+            # Hold sim time against the wall clock so resuming does not sprint to
+            # catch up on however long the pause lasted.
+            started = frame_started - sim_time
+        else:
+            steps = 0
             with wp.ScopedTimer("step", active=False):
-                example.step()
+                while sim_time + frame_dt <= frame_started - started and steps < MAX_STEPS_PER_FRAME:
+                    example.step()
+                    sim_time += frame_dt
+                    steps += 1
+            if steps >= MAX_STEPS_PER_FRAME:
+                # This scene cannot hold real time on this GPU. Give up the accrued
+                # deficit instead of chasing it and falling further behind.
+                started = frame_started - sim_time
         with wp.ScopedTimer("render", active=False):
             example.render()
         frames += 1
         if frames == 1:
             emit_stage("streaming")
 
-        simulation_dt = float(getattr(example, "frame_dt", 1.0 / 30.0))
-        target_period = max(simulation_dt, 1.0 / 30.0)
-        remaining = target_period - (time.perf_counter() - frame_started)
+        remaining = render_period - (time.perf_counter() - frame_started)
         if remaining > 0:
             time.sleep(remaining)
 
