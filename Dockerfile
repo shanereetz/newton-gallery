@@ -4,7 +4,6 @@ FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04
 
 ARG NEWTON_COMMIT=045db424a2638eb8e3abd42795584e4eaf96dcfc
 ARG NEWTON_REPOSITORY=https://github.com/newton-physics/newton.git
-ARG PREFETCH_NEWTON_ASSETS=1
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -15,6 +14,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     NEWTON_LAUNCHER_PORT=4173 \
     RERUN_WEB_PORT=9090 \
     RERUN_GRPC_PORT=9876 \
+    RERUN_SERVER_MEMORY_LIMIT=4MiB \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics \
     PATH=/root/.local/bin:${PATH}
@@ -50,13 +50,10 @@ COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
  && mkdir -p "${NEWTON_CACHE_PATH}"
 
-# Prefetch the four allowlisted example asset packs into the image so first
-# launch on a fresh Brev instance does not block on git clones. Cache mounts
-# in compose can still overlay this path at runtime.
-RUN if [ "${PREFETCH_NEWTON_ASSETS}" = "1" ]; then \
-      "${NEWTON_ROOT}/.venv/bin/python" -c \
-        'import newton; [newton.utils.download_asset(n) for n in ("unitree_g1","anybotics_anymal_c","franka_emika_panda","style3d")]'; \
-    fi
+# Do not import Newton/Warp during `docker build`: BuildKit has no NVIDIA
+# driver, so Warp prints "CUDA driver not found" and falls back to CPU-only.
+# Asset packs are fetched at container start (see docker-entrypoint.sh) when
+# `gpus: all` is attached.
 
 EXPOSE 4173
 

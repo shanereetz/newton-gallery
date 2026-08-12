@@ -1,5 +1,5 @@
 const examples = [
-  { id: "basic_shapes", name: "Basic Shapes", category: "Basics", difficulty: "Beginner", image: "./public/examples/basic-shapes.jpg", description: "A real Newton rigid-body scene with spheres, capsules, boxes, a mesh, contacts, and gravity.", tags: ["Rigid bodies", "Contacts", "Starter"] },
+  { id: "basic_shapes", name: "Basic Shapes", category: "Basics", difficulty: "Beginner", image: "./public/examples/basic-shapes.jpg", description: "A rigid-body scene with spheres, capsules, boxes, a mesh, contacts, and gravity.", tags: ["Rigid bodies", "Contacts", "Starter"] },
   { id: "robot_g1", name: "G1 Humanoid", category: "Robots", difficulty: "Intermediate", image: "./public/examples/robot-g1.jpg", description: "Explore articulated humanoid dynamics with a Unitree G1 model and Newton's MuJoCo Warp backend.", tags: ["Humanoid", "MuJoCo Warp", "Articulation"] },
   { id: "robot_anymal_c_walk", name: "ANYmal C Walk", category: "Robots", difficulty: "Intermediate", image: "./public/examples/anymal-walk.jpg", description: "Run a quadruped locomotion policy and inspect the synchronized gait in real time.", tags: ["Locomotion", "Policy", "Quadruped"] },
   { id: "cloth_franka", name: "Franka Cloth", category: "Cloth", difficulty: "Advanced", image: "./public/examples/cloth-franka.jpg", description: "Watch a Franka arm interact with deformable cloth in a contact-rich manipulation scene.", tags: ["Deformables", "Franka", "Contact"] },
@@ -15,7 +15,8 @@ const state = {
   query: "",
   runtime: null,
   viewerUrl: "",
-  connectedExample: null,
+  connectedRunId: null,
+  bundleReady: null,
   statusTimer: null,
   logTimer: null,
   launching: false,
@@ -33,6 +34,9 @@ const state = {
 // process reports its first rendered frame so an empty viewer never shows.
 const STREAM_SETTLE_MS = 600;
 const MARKERLESS_FALLBACK_MS = 20000;
+// Give up waiting on the viewer's own canvas eventually, so a wasm failure
+// leaves the user looking at Rerun's error rather than at this cover forever.
+const BUNDLE_FALLBACK_MS = 90000;
 
 const el = {};
 let toastTimer;
@@ -111,7 +115,9 @@ function buildViewerUrl(runtime) {
   // tabs, and Rerun's WebGPU->WebGL fallback fails ("canvas already in use").
   // WebGL is the most compatible default; override via ?renderer= in the URL.
   const renderer = new URLSearchParams(window.location.search).get("renderer") || "webgl";
-  return `${viewerBase}/?url=${encodeURIComponent(proxy)}&renderer=${encodeURIComponent(renderer)}`;
+  // Presence of hide_welcome_screen (any value) suppresses Rerun's example
+  // gallery that otherwise flashes before the live stream attaches.
+  return `${viewerBase}/?url=${encodeURIComponent(proxy)}&renderer=${encodeURIComponent(renderer)}&hide_welcome_screen`;
 }
 
 function updateRunButton() {
@@ -149,6 +155,7 @@ function startProgressTicker() {
     // the bar eases toward that phase's ceiling and never past it.
     if (displayed < ceiling) state.progress.displayed = displayed + (ceiling - displayed) * 0.04;
     state.progress.elapsed += 0.14;
+    state.bundleReady = viewerBundleReady();
     renderProgress();
     if (++ticks % 4 === 0) fetchStatus().catch(() => {});
   }, 140);
@@ -159,8 +166,26 @@ function renderProgress() {
   el.progressFill.style.width = `${value}%`;
   el.progressTrack.setAttribute("aria-valuenow", String(value));
   el.progressPercent.textContent = `${value}%`;
-  el.progressPhase.textContent = state.progress.detail;
+  // Newton streaming frames is not the end of the wait: the browser still has to
+  // fetch and start the viewer's wasm bundle, so report that phase honestly.
+  const waitingOnBundle = state.progress.phase === "streaming" && state.bundleReady === false;
+  el.progressPhase.textContent = waitingOnBundle
+    ? "Loading the Rerun viewer bundle in your browser."
+    : state.progress.detail;
   el.progressElapsed.textContent = `${Math.round(state.progress.elapsed)}s`;
+}
+
+function viewerBundleReady() {
+  // The iframe's load event fires for Rerun's shell page, well before its wasm
+  // viewer has been fetched and started. The viewer is same-origin through the
+  // /viewer proxy, so its own canvas is the only honest readiness signal.
+  try {
+    const canvas = el.rerunFrame.contentDocument?.getElementById("the_canvas_id");
+    if (!canvas) return null;
+    return canvas.classList.contains("visible");
+  } catch {
+    return null;
+  }
 }
 
 function applyProgress(runtime) {
@@ -173,6 +198,12 @@ function applyProgress(runtime) {
     el.loadingCopy.textContent = "Reconnected to the launcher. Attaching the embedded Rerun viewer…";
   }
   const failed = incoming.phase === "failed" || incoming.phase === "offline";
+  if (!failed && !state.launching && !el.loadingCover.hidden) {
+    // A run started elsewhere (another tab, the API, a container restart) still
+    // owns this cover, so name the scene the runtime is actually bringing up.
+    const active = examples.find((item) => item.id === runtime.example);
+    if (active) el.loadingTitle.textContent = `Starting ${active.name}`;
+  }
   state.progress.floor = incoming.percent;
   state.progress.ceiling = failed ? state.progress.displayed : incoming.ceiling;
   state.progress.phase = incoming.phase;
@@ -192,6 +223,8 @@ function maybeFinishLoading(runtime) {
   const markerless =
     !runtime.progress?.has_markers && Date.now() - state.coverShownAt > MARKERLESS_FALLBACK_MS;
   if (!streaming && !markerless) return;
+  const waited = Date.now() - state.coverShownAt;
+  if (viewerBundleReady() === false && waited < BUNDLE_FALLBACK_MS) return;
   state.finishing = true;
   window.setTimeout(() => {
     state.finishing = false;
@@ -204,11 +237,14 @@ function connectViewer(force = false) {
   const url = buildViewerUrl(state.runtime);
   el.openViewer.href = url;
   el.endpoint.textContent = decodeURIComponent(new URL(url).searchParams.get("url") || "");
-  if (!force && state.connectedExample === state.runtime.example && state.viewerUrl === url) return;
+  // Restarting the same example produces an identical URL, so the run id is what
+  // distinguishes a new stream from the one the iframe is already attached to.
+  if (!force && state.connectedRunId === state.runtime.run_id && state.viewerUrl === url) return;
 
   state.viewerUrl = url;
-  state.connectedExample = state.runtime.example;
+  state.connectedRunId = state.runtime.run_id;
   state.frameLoaded = false;
+  state.bundleReady = false;
   el.rerunFrame.src = "about:blank";
   window.setTimeout(() => {
     el.rerunFrame.src = url;
@@ -219,14 +255,17 @@ function updateRuntimeUi(runtime) {
   state.runtime = runtime;
   const active = examples.find((example) => example.id === runtime.example);
 
+  // The header names whatever the runtime is loading, not just what it finished
+  // loading, so a page opened mid-launch does not label the wrong scene.
+  if (active) {
+    el.viewerTitle.textContent = active.name;
+    el.viewerPath.textContent = `/world/${active.id}`;
+  }
+
   if (runtime.viewer_ready) {
     const streaming = runtime.progress?.phase === "streaming";
     el.streamLabel.textContent = streaming ? "Live" : "Loading";
     el.processStatus.innerHTML = `<span class="status-dot"></span> Running · PID ${runtime.pid}`;
-    if (active) {
-      el.viewerTitle.textContent = active.name;
-      el.viewerPath.textContent = `/world/${active.id}`;
-    }
     connectViewer();
   } else if (runtime.running) {
     el.streamLabel.textContent = "Connecting";
@@ -247,12 +286,13 @@ async function fetchStatus() {
   return runtime;
 }
 
-async function waitForViewer(exampleId, timeoutMs = 90000) {
+async function waitForViewer(exampleId, runId, timeoutMs = 90000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const runtime = await fetchStatus();
     if (runtime.error && !runtime.running) throw new Error(runtime.error);
-    if (runtime.example === exampleId && runtime.viewer_ready) return runtime;
+    const isThisRun = runId === undefined || runtime.run_id === runId;
+    if (isThisRun && runtime.example === exampleId && runtime.viewer_ready) return runtime;
     await new Promise((resolve) => window.setTimeout(resolve, 550));
   }
   throw new Error("Timed out waiting for the Rerun viewer");
@@ -276,8 +316,8 @@ async function runSelectedExample() {
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Unable to launch example");
-    state.connectedExample = null;
-    await waitForViewer(example.id);
+    state.connectedRunId = null;
+    await waitForViewer(example.id, payload.run_id);
     connectViewer(true);
     await refreshLog();
     showToast(`${example.name} is running in the embedded viewer`);

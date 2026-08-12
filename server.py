@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import gzip
+import hashlib
+import http.client
 import json
 import os
 import signal
@@ -29,6 +32,7 @@ GRPC_ORIGIN = os.environ.get("RERUN_GRPC_ORIGIN", "").rstrip("/") or None
 LOG_PATH = ROOT / ".newton-viewer.log"
 
 STAGE_MARKER = "NEWTON_LAUNCHER_STAGE:"
+PORT_RELEASE_TIMEOUT = 15.0
 
 # Floor and ceiling percentages per phase. Newton reports no load percentage,
 # so the bar is driven by observed milestones: the floor is what has provably
@@ -45,6 +49,15 @@ PHASE_BOUNDS = {
     "offline": (0, 0),
     "failed": (0, 0),
 }
+
+# The Rerun viewer bundle is a ~40 MB uncompressed wasm file and its upstream
+# server sends neither compression nor cache validators. Over a remote tunnel
+# that is a multi-minute download repeated on every reload, so the launcher
+# fetches these assets once, keeps a gzipped copy, and serves them with an ETag.
+VIEWER_ASSET_SUFFIXES = (".wasm", ".js", ".css", ".json", ".svg", ".png", ".ico", ".woff2")
+COMPRESSIBLE_SUFFIXES = (".wasm", ".js", ".css", ".json", ".svg")
+VIEWER_ASSET_MAX_BYTES = 128 * 1024 * 1024
+VIEWER_ASSET_MAX_AGE = 86400
 
 ALLOWED_EXAMPLES = {
     "basic_shapes",
@@ -66,6 +79,41 @@ def port_is_open(port: int) -> bool:
         return False
 
 
+def stage_markers(log_text: str) -> set[str]:
+    return {
+        line[len(STAGE_MARKER) :].strip() for line in log_text.splitlines() if line.startswith(STAGE_MARKER)
+    }
+
+
+def viewer_ports_busy() -> bool:
+    return port_is_open(VIEWER_PORT) or port_is_open(GRPC_PORT)
+
+
+def kill_stray_runners(keep_pid: int | None = None) -> None:
+    """Kill example processes this launcher does not own.
+
+    A runner orphaned by a previous launcher (or a crashed container) keeps
+    listening on the Rerun ports, so the next launch either fails to bind or the
+    browser attaches to the old stream and the scene appears not to restart.
+    """
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == os.getpid() or pid == keep_pid:
+            continue
+        try:
+            cmdline = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        if b"run_example_realtime.py" not in cmdline:
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
 class NewtonRuntime:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -74,6 +122,7 @@ class NewtonRuntime:
         self._started_at: float | None = None
         self._log_handle = None
         self._last_error: str | None = None
+        self._run_id = 0
 
     def start(self, example: str) -> dict:
         if example not in ALLOWED_EXAMPLES:
@@ -105,6 +154,7 @@ class NewtonRuntime:
             self._example = example
             self._started_at = time.time()
             self._last_error = None
+            self._run_id += 1
             return self.status()
 
     def stop(self) -> None:
@@ -128,8 +178,21 @@ class NewtonRuntime:
             self._log_handle = None
         self._process = None
         self._started_at = None
+        kill_stray_runners()
+        # Rerun's ports must be free before the next launch: binding fails if
+        # they are held, and a browser that connects while the dying stream is
+        # still listening sees the previous scene.
+        deadline = time.monotonic() + PORT_RELEASE_TIMEOUT
+        while viewer_ports_busy() and time.monotonic() < deadline:
+            time.sleep(0.2)
 
-    def progress(self, running: bool, viewer_ready: bool) -> dict:
+    def _read_log(self) -> str:
+        try:
+            return LOG_PATH.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+
+    def progress(self, running: bool, viewer_ready: bool, log_text: str) -> dict:
         elapsed = time.time() - self._started_at if self._started_at else 0.0
         if not running:
             phase = "failed" if self._last_error else "offline"
@@ -143,15 +206,7 @@ class NewtonRuntime:
                 "has_markers": False,
             }
 
-        log_text = ""
-        try:
-            log_text = LOG_PATH.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            pass
-
-        stages = {
-            line[len(STAGE_MARKER) :].strip() for line in log_text.splitlines() if line.startswith(STAGE_MARKER)
-        }
+        stages = stage_markers(log_text)
         module_loads = log_text.count(" load on device ")
         compiled = module_loads - log_text.count("(cached)")
         downloading = log_text.rfind("Cloning ") > log_text.rfind("Successfully downloaded")
@@ -195,12 +250,18 @@ class NewtonRuntime:
         running = process is not None and return_code is None
         if process is not None and return_code is not None and self._last_error is None:
             self._last_error = f"Newton exited with code {return_code}"
-        viewer_ready = running and port_is_open(VIEWER_PORT) and port_is_open(GRPC_PORT)
+        log_text = self._read_log() if running else ""
+        # Open ports alone are not proof of readiness: a stopping run can still be
+        # listening. The scene marker is written by this run only, so it ties the
+        # Rerun server to the process the browser is about to attach to.
+        own_stream = bool(stage_markers(log_text) & {"scene", "streaming"})
+        viewer_ready = running and own_stream and port_is_open(VIEWER_PORT) and port_is_open(GRPC_PORT)
         return {
             "example": self._example,
             "running": running,
             "viewer_ready": viewer_ready,
-            "progress": self.progress(running, viewer_ready),
+            "run_id": self._run_id,
+            "progress": self.progress(running, viewer_ready, log_text),
             "pid": process.pid if running else None,
             "started_at": self._started_at,
             "viewer_port": VIEWER_PORT,
@@ -224,7 +285,59 @@ class NewtonRuntime:
             return []
 
 
+class ViewerAssetCache:
+    """Fetch-once, gzip-once store for the Rerun viewer's static assets."""
+
+    def __init__(self) -> None:
+        self._entries: dict[str, dict] = {}
+        self._lock = threading.Lock()
+
+    def get(self, upstream_path: str) -> dict | None:
+        key = urlparse(upstream_path).path
+        with self._lock:
+            entry = self._entries.get(key)
+        if entry is not None:
+            return entry
+        entry = self._fetch(upstream_path)
+        if entry is None:
+            return None
+        with self._lock:
+            return self._entries.setdefault(key, entry)
+
+    def _fetch(self, upstream_path: str) -> dict | None:
+        host, port = WEB_UPSTREAM
+        connection = http.client.HTTPConnection(host, port, timeout=60)
+        try:
+            connection.request("GET", upstream_path, headers={"Accept-Encoding": "identity"})
+            response = connection.getresponse()
+            if response.status != HTTPStatus.OK or response.getheader("Content-Encoding"):
+                return None
+            body = response.read()
+            content_type = response.getheader("Content-Type", "application/octet-stream")
+        except (OSError, http.client.HTTPException):
+            return None
+        finally:
+            connection.close()
+
+        if not body or len(body) > VIEWER_ASSET_MAX_BYTES:
+            return None
+
+        compressed = None
+        if urlparse(upstream_path).path.endswith(COMPRESSIBLE_SUFFIXES):
+            compressed = gzip.compress(body, compresslevel=6)
+            if len(compressed) >= len(body):
+                compressed = None
+
+        return {
+            "content_type": content_type,
+            "raw": body,
+            "gzip": compressed,
+            "etag": f'"{hashlib.sha256(body).hexdigest()[:16]}"',
+        }
+
+
 runtime = NewtonRuntime()
+viewer_assets = ViewerAssetCache()
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -279,6 +392,34 @@ class Handler(SimpleHTTPRequestHandler):
         finally:
             upstream.close()
 
+    def _serve_viewer_asset(self, upstream_path: str) -> bool:
+        entry = viewer_assets.get(upstream_path)
+        if entry is None:
+            return False
+
+        cache_control = f"public, max-age={VIEWER_ASSET_MAX_AGE}"
+        if self.headers.get("If-None-Match") == entry["etag"]:
+            self.send_response(HTTPStatus.NOT_MODIFIED)
+            self.send_header("ETag", entry["etag"])
+            self.send_header("Cache-Control", cache_control)
+            self.end_headers()
+            return True
+
+        compressed = entry["gzip"] is not None and "gzip" in self.headers.get("Accept-Encoding", "")
+        body = entry["gzip"] if compressed else entry["raw"]
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", entry["content_type"])
+        if compressed:
+            self.send_header("Content-Encoding", "gzip")
+        self.send_header("Vary", "Accept-Encoding")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("ETag", entry["etag"])
+        self.send_header("Cache-Control", cache_control)
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+        return True
+
     def _send_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
@@ -291,7 +432,10 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         if path == "/viewer" or path.startswith("/viewer/"):
-            self._relay(*WEB_UPSTREAM, self.path[len("/viewer"):] or "/")
+            upstream_path = self.path[len("/viewer"):] or "/"
+            if path.endswith(VIEWER_ASSET_SUFFIXES) and self._serve_viewer_asset(upstream_path):
+                return
+            self._relay(*WEB_UPSTREAM, upstream_path)
             return
         if path == "/api/status":
             self._send_json(runtime.status())

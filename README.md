@@ -76,12 +76,24 @@ Rerun's `rerun+` transport prefix.
 | --- | --- |
 | `NEWTON_COMMIT` | Validated pinned commit |
 | `NEWTON_LAUNCHER_PORT` | `4173` |
-| `PREFETCH_NEWTON_ASSETS` | `1` (image build) |
+| `PREFETCH_NEWTON_ASSETS` | `1` (container start) |
+| `RERUN_SERVER_MEMORY_LIMIT` | `16MiB` |
 | `RERUN_WEB_ORIGIN` | empty (same-origin proxy) |
 | `RERUN_GRPC_ORIGIN` | empty (same-origin proxy) |
 
-Set `PREFETCH_NEWTON_ASSETS=0` to skip asset downloads during the image build
+Set `PREFETCH_NEWTON_ASSETS=0` to skip asset downloads on first container start
 (examples then fetch packs on first run into the `newton-cache` volume).
+
+`RERUN_SERVER_MEMORY_LIMIT` caps the backlog Rerun's gRPC server replays to a
+connecting browser. Rerun defaults to 1 GiB, which a viewer opened minutes into a
+run must download before it reaches live frames — tens of seconds of apparent
+latency. Geometry is logged as static data and is never dropped, so a small
+buffer still yields a complete scene; raise it only if timeline scrubbing through
+past frames is needed.
+
+Asset prefetch runs at container start, not during `docker build`. BuildKit has
+no GPU driver; importing Newton/Warp in a build step only produces a misleading
+“CUDA driver not found” warning.
 
 ## Local Docker
 
