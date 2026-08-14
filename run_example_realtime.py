@@ -17,10 +17,9 @@ import newton.examples
 # transitions are the only truthful progress signal available.
 STAGE_MARKER = "NEWTON_LAUNCHER_STAGE:"
 
-# Frames logged to the viewer per second, and the ceiling on simulation steps per
-# logged frame so a scene that cannot hold real time degrades instead of stalling.
+# Frames logged to the viewer per second. One simulation step per logged frame
+# keeps MuJoCo contact budgets stable; the stream stays bounded at this rate.
 RENDER_FPS = 30.0
-MAX_STEPS_PER_FRAME = 16
 
 
 def emit_stage(stage: str) -> None:
@@ -32,34 +31,19 @@ def paced_run(example, args) -> None:
     if hasattr(example, "gui") and hasattr(example.viewer, "register_ui_callback"):
         example.viewer.register_ui_callback(lambda ui: example.gui(ui), position="side")
 
-    # Examples advance as little as 1/100 s per step, so stepping once per logged
-    # frame plays the scene in slow motion (0.3x for a 100 Hz example). Step as
-    # many times as the wall clock calls for, and log at most RENDER_FPS frames a
-    # second so the browser stream stays bounded.
+    # Log at most RENDER_FPS frames/sec. Step at most once per logged frame —
+    # catching up with multi-step bursts blows MuJoCo contact budgets (nefc /
+    # njmax overflow) and collapses articulated scenes. Prefer slight slow-mo
+    # under load over an unstable simulation.
     frame_dt = float(getattr(example, "frame_dt", 1.0 / 60.0))
     render_period = max(frame_dt, 1.0 / RENDER_FPS)
 
     frames = 0
-    sim_time = 0.0
-    started = time.perf_counter()
-
     while example.viewer.is_running():
         frame_started = time.perf_counter()
-        if example.viewer.is_paused():
-            # Hold sim time against the wall clock so resuming does not sprint to
-            # catch up on however long the pause lasted.
-            started = frame_started - sim_time
-        else:
-            steps = 0
+        if not example.viewer.is_paused():
             with wp.ScopedTimer("step", active=False):
-                while sim_time + frame_dt <= frame_started - started and steps < MAX_STEPS_PER_FRAME:
-                    example.step()
-                    sim_time += frame_dt
-                    steps += 1
-            if steps >= MAX_STEPS_PER_FRAME:
-                # This scene cannot hold real time on this GPU. Give up the accrued
-                # deficit instead of chasing it and falling further behind.
-                started = frame_started - sim_time
+                example.step()
         with wp.ScopedTimer("render", active=False):
             example.render()
         frames += 1
@@ -106,11 +90,12 @@ def limit_stream_buffer() -> None:
 def pin_geometry() -> None:
     """Log meshes as static so a bounded buffer cannot evict the scene.
 
-    Newton logs a mesh non-static the first time it sees its name, so with a
-    small replay buffer the geometry is dropped within a minute and any browser
-    that connects later renders an empty viewport. Static entries are exempt
-    from the buffer limit, and each log of a given mesh overwrites the previous
-    one, so pinning geometry costs a fixed amount of memory per mesh.
+    Newton logs instanced meshes non-static (log_instances) and a plain mesh
+    non-static on its first appearance, so with a small replay buffer the
+    geometry is dropped within a minute and a browser that connects later
+    renders an empty viewport. Forcing every Mesh3D static exempts it from the
+    buffer limit; each re-log of a mesh overwrites the last, so the cost is a
+    fixed amount of memory per mesh.
     """
     log = rr.log
 
@@ -123,12 +108,13 @@ def pin_geometry() -> None:
 
 
 def stream_recent_poses() -> None:
-    """Log body poses as temporal data so stale frames can be dropped.
+    """Keep body poses in the timeline so a late viewer sees the current frame.
 
-    Newton defaults to static poses to bound the browser's memory, but static
-    data is exempt from the server's buffer limit, so every pose ever logged is
-    replayed to a connecting viewer and memory grows for the length of the run.
-    Temporal poses fall under the limit; geometry stays put via `pin_geometry`.
+    With Newton's default (keep_historical_data=False) poses are logged static
+    and, paired with the bounded buffer, a browser attaching mid-run renders an
+    empty viewport. keep_historical_data=True puts poses on the timeline, where
+    the buffer keeps the most recent frames and drops the rest — bounded memory,
+    and the viewer opens on live motion instead of nothing.
     """
     from newton.viewer import ViewerRerun
 
@@ -141,6 +127,55 @@ def stream_recent_poses() -> None:
     ViewerRerun.__init__ = init_streaming
 
 
+def normalize_instance_poses() -> None:
+    """Normalize instance-pose quaternions before they reach Rerun.
+
+    Newton emits quaternions straight from Warp transforms, and floating-point
+    drift leaves some of them slightly off unit length. Rerun rejects any
+    non-unit rotation as invalid and substitutes identity, which collapses
+    articulated robots (ANYmal, Franka) into flat sheets. Normalizing here keeps
+    every rotation valid; degenerate (zero / non-finite) quaternions fall back to
+    identity xyzw.
+    """
+    import numpy as np
+
+    orig = rr.InstancePoses3D
+
+    def normalized(*args, **kwargs):
+        q = kwargs.get("quaternions")
+        if q is not None:
+            arr = np.asarray(q, dtype=np.float64).reshape(-1, 4)
+            norms = np.linalg.norm(arr, axis=1, keepdims=True)
+            bad = ~np.isfinite(norms[:, 0]) | (norms[:, 0] < 1e-8)
+            safe = np.where(norms < 1e-8, 1.0, norms)
+            arr = arr / safe
+            arr[bad] = (0.0, 0.0, 0.0, 1.0)
+            kwargs["quaternions"] = arr.astype(np.float32)
+        return orig(*args, **kwargs)
+
+    rr.InstancePoses3D = normalized
+
+
+def clamp_ground_plane() -> None:
+    """Bound the visual ground plane so auto-framing lands on the subject.
+
+    Newton draws an "infinite" ground plane at 1.5x the world extents, which for
+    the robot scenes is tens of meters across. Rerun frames every entity when the
+    3D view first opens, so that plane sets the framing and a 1 m robot arrives a
+    few pixels tall — the scene reads as broken. Clamping the plane keeps a
+    ground reference without letting it dictate the camera.
+    """
+    from newton._src.viewer import viewer_rerun
+
+    create_plane_mesh = viewer_rerun.create_plane_mesh
+    limit = float(os.environ.get("NEWTON_GROUND_PLANE_MAX", "12.0"))
+
+    def create_bounded_plane_mesh(width, length, *args, **kwargs):
+        return create_plane_mesh(min(width, limit), min(length, limit), *args, **kwargs)
+
+    viewer_rerun.create_plane_mesh = create_bounded_plane_mesh
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         raise SystemExit("Usage: run_example_realtime.py <example_name> [example options]")
@@ -149,6 +184,8 @@ def main() -> None:
     limit_stream_buffer()
     pin_geometry()
     stream_recent_poses()
+    normalize_instance_poses()
+    clamp_ground_plane()
     newton.examples.run = paced_run
     newton.examples.main()
 
