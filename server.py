@@ -30,6 +30,8 @@ GRPC_UPSTREAM = ("127.0.0.1", GRPC_PORT)
 VIEWER_ORIGIN = os.environ.get("RERUN_WEB_ORIGIN", "").rstrip("/") or None
 GRPC_ORIGIN = os.environ.get("RERUN_GRPC_ORIGIN", "").rstrip("/") or None
 LOG_PATH = ROOT / ".newton-viewer.log"
+DEBUG_LOG_PATH = Path("/home/sreetz/Desktop/newton-gallery/.cursor/debug-72d3bf.log")
+DEBUG_RUN_ID = f"server-{os.getpid()}-{int(time.time())}"
 
 STAGE_MARKER = "NEWTON_LAUNCHER_STAGE:"
 PORT_RELEASE_TIMEOUT = 15.0
@@ -69,6 +71,24 @@ ALLOWED_EXAMPLES = {
     "diffsim_drone",
     "cloth_style3d",
 }
+
+
+def debug_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    payload = {
+        "sessionId": "72d3bf",
+        "runId": DEBUG_RUN_ID,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with DEBUG_LOG_PATH.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload, default=str) + "\n")
+    except OSError:
+        pass
 
 
 def port_is_open(port: int) -> bool:
@@ -352,6 +372,20 @@ class Handler(SimpleHTTPRequestHandler):
         same-origin and only one port needs to be exposed.
         """
         self.close_connection = True
+        is_grpc_stream = port == GRPC_PORT
+        relay_started = time.perf_counter()
+        window_started = relay_started
+        window_bytes = 0
+        max_client_write_seconds = 0.0
+        if is_grpc_stream:
+            # region agent log
+            debug_log(
+                "H4",
+                "server.py:Handler._relay:start",
+                "gRPC-Web relay opened",
+                {"method": self.command, "path": upstream_path, "client": self.client_address[0]},
+            )
+            # endregion
         try:
             upstream = socket.create_connection((host, port))
         except OSError as exc:
@@ -385,12 +419,44 @@ class Handler(SimpleHTTPRequestHandler):
                 data = upstream.recv(65536)
                 if not data:
                     break
+                client_write_started = time.perf_counter()
                 self.wfile.write(data)
                 self.wfile.flush()
+                client_write_seconds = time.perf_counter() - client_write_started
+                if is_grpc_stream:
+                    window_bytes += len(data)
+                    max_client_write_seconds = max(max_client_write_seconds, client_write_seconds)
+                    window_elapsed = time.perf_counter() - window_started
+                    if window_elapsed >= 5.0:
+                        # region agent log
+                        debug_log(
+                            "H4",
+                            "server.py:Handler._relay:window",
+                            "Five-second gRPC-Web relay window",
+                            {
+                                "bytes": window_bytes,
+                                "elapsed_s": round(window_elapsed, 4),
+                                "throughput_mbps": round(window_bytes * 8 / window_elapsed / 1_000_000, 3),
+                                "max_client_write_ms": round(max_client_write_seconds * 1000, 3),
+                            },
+                        )
+                        # endregion
+                        window_started = time.perf_counter()
+                        window_bytes = 0
+                        max_client_write_seconds = 0.0
         except OSError:
             pass
         finally:
             upstream.close()
+            if is_grpc_stream:
+                # region agent log
+                debug_log(
+                    "H4",
+                    "server.py:Handler._relay:end",
+                    "gRPC-Web relay closed",
+                    {"duration_s": round(time.perf_counter() - relay_started, 4)},
+                )
+                # endregion
 
     def _serve_viewer_asset(self, upstream_path: str) -> bool:
         entry = viewer_assets.get(upstream_path)

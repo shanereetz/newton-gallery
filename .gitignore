@@ -1,5 +1,8 @@
 # Runtime log written by the launcher on every example launch.
 .newton-viewer.log
 
+# Editor/session scratch, including debug instrumentation output.
+.cursor/
+
 __pycache__/
 *.pyc
